@@ -180,3 +180,22 @@ def test_read_unifi_survives_missing_runtime_data():
 def test_read_unifi_survives_missing_api_handlers():
     hass = _hass(SimpleNamespace())  # api without .clients / .devices
     assert read_unifi(hass) == UnifiSnapshot([], [])
+
+
+def test_device_whose_uplink_property_raises_keeps_its_place():
+    """aiounifi's Device.uplink is `raw["uplink"]`: a gateway has no such key, so it raises KeyError."""
+    class Gateway:
+        mac = GW
+        ip = "192.0.2.1"
+        name = "router"
+        model = "X"
+        type = "udm"
+        raw = {}
+
+        @property
+        def uplink(self):
+            return self.raw["uplink"]
+
+    api = SimpleNamespace(clients=_Handler(), devices=_Handler({GW: Gateway()}))
+    (d,) = parse_controller(api).devices
+    assert (d.mac, d.kind, d.uplink_mac) == (GW, "router", None)

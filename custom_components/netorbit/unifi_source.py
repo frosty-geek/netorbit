@@ -118,7 +118,10 @@ def _parse_device(d: Any) -> UnifiDevice | None:
     kind = _DEVICE_KINDS.get(getattr(d, "type", None))
     if not mac or not kind:
         return None
-    up = getattr(d, "uplink", None)
+    try:
+        up = getattr(d, "uplink", None)  # aiounifi reads raw["uplink"]: KeyError on a gateway
+    except Exception:  # noqa: BLE001
+        up = None
     up = up if isinstance(up, dict) else {}
     return UnifiDevice(
         mac=mac,
