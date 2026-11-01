@@ -467,6 +467,37 @@ async def test_off_subnet_clients_from_the_controller(hass: HomeAssistant, fake_
     assert not remote_ips & pinged
 
 
+async def test_client_moving_back_into_the_subnet_is_pinged_again(hass: HomeAssistant, fake_net) -> None:
+    """A client that comes home from the IoT VLAN must not stay flagged controller-only."""
+    net = SHAPES["unifi_vlans"](random.Random(3))
+    pinged: set[str] = set()
+    real_multiping = fake_net.multiping
+
+    async def spy(addresses, **kwargs):
+        pinged.update(addresses)
+        return await real_multiping(addresses, **kwargs)
+
+    fake_net.multiping = spy
+    ctx = await _run(hass, fake_net, net, community_known=True, seed=3, extra_opts={"include_off_subnet": True})
+    coord = ctx["coord"]
+    mover = net.remote[0]
+    api = hass.config_entries.async_entries("unifi")[0].runtime_data.api
+    new_ip = "192.0.2.250"
+    api.clients[mover["mac"]].ip = new_ip
+    fake_net.alive.add(new_ip)
+    fake_net.arp[new_ip] = mover["mac"]
+    pinged.clear()
+    coord._force_sweep = True
+    await coord.async_refresh()
+    await hass.async_block_till_done()
+    assert new_ip in pinged, "back in the subnet it must be pinged like any other device"
+    assert not coord._seen[mover["mac"]].get("controller_only")
+    # With the option off it stays: it was a normal device again, not a controller-only record.
+    coord.opts["include_off_subnet"] = False
+    await coord.async_refresh()
+    assert mover["mac"] in coord._seen
+
+
 async def test_off_subnet_option_off_again_removes_them(hass: HomeAssistant, fake_net) -> None:
     net = SHAPES["unifi_vlans"](random.Random(3))
     ctx = await _run(hass, fake_net, net, community_known=True, seed=3, extra_opts={"include_off_subnet": True})

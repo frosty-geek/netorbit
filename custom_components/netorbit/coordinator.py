@@ -870,7 +870,8 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         """
         if not self.opts[CONF_INCLUDE_OFF_SUBNET]:
             for key in [k for k, r in self._seen.items() if r.get("controller_only")]:
-                del self._seen[key]
+                if self._seen[key].pop("controller_only") and self._seen[key].pop("controller_created", False):
+                    del self._seen[key]  # NetOrbit only knew it from the controller
             return set()
         try:
             subnet = ipaddress.ip_network(self.subnet, strict=False)
@@ -883,10 +884,16 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
                 continue
             try:
                 if ipaddress.ip_address(c.ip) in subnet:
-                    continue  # the sweep and ping already cover it
+                    # The sweep and ping cover it now (it may have come back from another VLAN).
+                    for flag in ("controller_only", "controller_created"):
+                        (self._seen.get(c.mac) or {}).pop(flag, None)
+                    continue
             except ValueError:
                 continue
+            is_new = c.mac not in self._seen
             rec = self._seen.setdefault(c.mac, {"first_seen": now.isoformat(), "discovered": True})
+            if is_new:
+                rec["controller_created"] = True
             rec.update({"mac": c.mac, "ip": c.ip, "controller_only": True, "discovered": True})
             if c.hostname:
                 rec["hostname"] = c.hostname
