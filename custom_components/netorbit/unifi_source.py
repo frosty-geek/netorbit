@@ -50,6 +50,8 @@ class UnifiClient:
     vlan: int | None = None
     ssid: str | None = None
     last_seen: int | None = None
+    uplink_name: str | None = None  # name of the device it hangs off (`last_uplink_name`); USW Flex needs it
+    uplink_port: int | None = None  # `last_uplink_remote_port`, for when `sw_port` is missing
 
 
 @dataclass
@@ -99,17 +101,22 @@ def _parse_client(c: Any) -> UnifiClient | None:
     raw = getattr(c, "raw", None)
     raw = raw if isinstance(raw, dict) else {}
     uplink = normalize_mac(getattr(c, "sw_mac", None) if wired else getattr(c, "ap_mac", None))
+    port = _int(getattr(c, "sw_port", None)) if wired else None
+    if wired and port is None:
+        port = _int(raw.get("last_uplink_remote_port"))
     return UnifiClient(
         mac=mac,
         ip=_str(getattr(c, "ip", None)),
         hostname=_str(getattr(c, "hostname", None)) or _str(getattr(c, "name", None)),
         uplink_mac=uplink,
-        port=_int(getattr(c, "sw_port", None)) if wired and uplink else None,
+        port=port if wired else None,
         wired=wired,
         network=_str(raw.get("network")),
         vlan=_int(raw.get("vlan")),
         ssid=None if wired else _str(getattr(c, "essid", None)),
         last_seen=_int(getattr(c, "last_seen", None)),
+        uplink_name=_str(raw.get("last_uplink_name")),
+        uplink_port=_int(raw.get("last_uplink_remote_port")),
     )
 
 

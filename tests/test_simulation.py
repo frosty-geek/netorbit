@@ -599,3 +599,30 @@ async def test_docs_scene(hass: HomeAssistant, fake_net, freezer, scene: str) ->
             await hass.async_block_till_done(wait_background_tasks=True)
     await ctx["coord"].async_refresh()
     _dump(hass, "docs_" + scene)
+
+
+async def test_flex_switch_clients_are_placed_by_uplink_name(hass: HomeAssistant, fake_net) -> None:
+    """USW Flex reports a `sw_mac` that is not the switch's own MAC (or none at all); the name and port still say where."""
+    net = SHAPES["unifi_vlans"](random.Random(3))
+    ctx = await _run(hass, fake_net, net, community_known=True, seed=3, extra_opts={"include_off_subnet": True})
+    coord = ctx["coord"]
+    api = hass.config_entries.async_entries("unifi")[0].runtime_data.api
+    wired = [r for r in net.remote if not r["wireless"]]
+    assert len(wired) >= 2
+    for i, r in enumerate(wired):
+        c = api.clients[r["mac"]]
+        parent = net.nodes[r["parent"]]
+        assert parent.hostname, "the sim switch needs a name for this test"
+        c.sw_mac = "02:00:00:00:00:99" if i % 2 == 0 else None  # example-ok: synthetic test value
+        c.sw_port = r["port"] if i % 2 == 0 else None
+        c.raw = {**c.raw, "last_uplink_name": parent.hostname, "last_uplink_remote_port": r["port"]}
+    coord._force_sweep = True
+    await coord.async_refresh()
+    await hass.async_block_till_done()
+    hubs, devices = _snapshot(hass)
+    found = _remote_by_mac(net, devices)
+    for r in wired:
+        a = found[r["mac"]]
+        (want,) = [k for k, s in hubs.items() if s.attributes["mac"] == net.nodes[r["parent"]].mac.upper()]
+        assert a["link"] == want and a["placement"] == "controller", r["hostname"]
+        assert a["port"] == r["port"], r["hostname"]

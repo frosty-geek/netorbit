@@ -849,9 +849,15 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         aps = client_access_points(self.hass)
         ports: dict[str, int] = {}
         self._unifi_nets = {c.mac: (c.network, c.vlan) for c in self._unifi.clients if c.network or c.vlan is not None}
+        # USW Flex reports a client's `sw_mac` as something that is not the switch's own MAC (and
+        # sometimes none), so a MAC that is no hub falls back to the uplink's name.
+        by_name = {d.name.casefold(): d.mac for d in self._unifi.devices if d.name}
         for c in self._unifi.clients:
-            if c.uplink_mac:
-                aps[c.mac] = c.uplink_mac
+            uplink = c.uplink_mac
+            if (not uplink or not self._hub_for_mac(uplink)) and c.uplink_name:
+                uplink = by_name.get(c.uplink_name.casefold()) or uplink
+            if uplink:
+                aps[c.mac] = uplink
                 if c.port is not None:
                     ports[c.mac] = c.port
         for d in self._unifi.devices:
