@@ -751,7 +751,13 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
                 continue
             rec = candidates.get(mac) or {}
             hub_type = HUB_SWITCH if dev.kind == "switch" else HUB_AP
-            adds.append({"name": dev.name or self._hub_name(mac, rec, hub_type), "type": hub_type, "host": dev.ip or rec.get("ip"), "mac": mac, "source": "controller"})
+            name = dev.name or self._hub_name(mac, rec, hub_type)
+            host = dev.ip or rec.get("ip")
+            if self.opts[CONF_AUTO_HUBS]:
+                adds.append({"name": name, "type": hub_type, "host": host, "mac": mac, "source": "controller"})
+            else:
+                suggestions.append({"key": mac, "mac": mac.upper(), "ip": host, "name": name, "type": hub_type,
+                                    "reasons": ["the UniFi controller lists it"]})
 
         for mac, rec in candidates.items():
             if mac in unifi_kinds or mac in dismissed or mac in ignored or self._is_hub_address(mac, rec.get("ip")):

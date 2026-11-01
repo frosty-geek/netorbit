@@ -99,11 +99,11 @@ async def _controller(hass: HomeAssistant, net: Network) -> None:
             hass.states.async_set(f"device_tracker.client_{i}", "home", {"mac": n.mac, "ap_mac": ap_mac})
 
 
-async def _run(hass: HomeAssistant, fake_net, net: Network, *, community_known: bool, seed: int) -> dict:
+async def _run(hass: HomeAssistant, fake_net, net: Network, *, community_known: bool, seed: int, extra_opts: dict | None = None) -> dict:
     rng = random.Random(seed)
     _apply(fake_net, net, rng)
     await _controller(hass, net)
-    opts = {"mode": "auto", "ping_interval": 60, "discovery_interval": 300, "stale_hours": 24, "ignore_random_mac": True}
+    opts = {"mode": "auto", "ping_interval": 60, "discovery_interval": 300, "stale_hours": 24, "ignore_random_mac": True, **(extra_opts or {})}
     if community_known and net.community != "public":
         opts["snmp_community"] = net.community
     entry = MockConfigEntry(domain=DOMAIN, title="NetOrbit", unique_id=net.subnet,
@@ -405,6 +405,15 @@ async def test_unifi_api_builds_hub_tree_and_places_clients(hass: HomeAssistant,
         assert a["link"] == want, f"{t.hostname or t.mac}: under {a['link']}, really under {want}"
         assert a["placement"] == "controller"
         assert a["port"] == (None if t.wireless else t.port_on_parent)
+
+
+async def test_unifi_hubs_respect_auto_hubs_off(hass: HomeAssistant, fake_net) -> None:
+    """With automatic hubs off, UniFi switches and APs are suggested, not added."""
+    net = SHAPES["unifi_flex"](random.Random(3))
+    ctx = await _run(hass, fake_net, net, community_known=True, seed=3, extra_opts={"auto_hubs": False})
+    hubs, _ = _snapshot(hass)
+    assert list(hubs) == ["hub:gateway"]
+    assert {sg["mac"] for sg in ctx["coord"].data.suggested_hubs} >= {net.nodes[k].mac.upper() for k in ("swA", "swB", "ap")}
 
 
 async def test_manual_placement_beats_unifi(hass: HomeAssistant, fake_net) -> None:
