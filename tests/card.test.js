@@ -6,7 +6,7 @@ globalThis.HTMLElement = class {};
 globalThis.customElements = { get: () => undefined, define: () => {} };
 globalThis.window = globalThis;
 console.info = () => {};
-const { netorbitLayout } = require("../custom_components/netorbit/frontend/netorbit-card.js");
+const { netorbitLayout, NetOrbitCard } = require("../custom_components/netorbit/frontend/netorbit-card.js");
 
 function model(hubDefs, devCounts) {
   const hubs = {};
@@ -314,4 +314,14 @@ test("with names shown, ordinary names stay", () => {
   // A name needs more than a short number or a version to be treated as an address.
   const fine = ["Living Room TV", "Office Switch", "Cafe", "Deadbeef Lamp", "Facade Light", "Decade", "Echo Dot 3", "Pixel 7 Pro", "Room 12", "Hallway 2nd Floor", "TV: Den", "Attic AP2"];
   for (const n of fine) assert.strictEqual(sharedLabel(n), n, n + " should stay");
+});
+
+test("hover details show the network and VLAN the controller reports, and the port", () => {
+  const hubs = { "hub:sw": { kind: "hub", label: "Switch" } };
+  const tip = (n) => NetOrbitCard.prototype._tipHtml.call({ _dhcpTip: () => "" }, { kind: "device", label: "Plug", status: "online", link: "hub:sw", ...n }, hubs, () => "#fff");
+  const html = tip({ network: "IoT", vlan: 15, port: 7 });
+  assert.match(html, /Network<\/span>IoT · VLAN 15/);
+  assert.match(html, /port 7/);
+  assert.doesNotMatch(tip({}), /Network/);
+  assert.match(tip({ vlan: 0 }), /VLAN 0/);
 });

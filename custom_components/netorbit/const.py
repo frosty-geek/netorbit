@@ -26,6 +26,7 @@ CONF_SNMP_ENABLED: Final = "snmp_enabled"
 CONF_SNMP_COMMUNITY: Final = "snmp_community"
 CONF_GROUP_BY_TYPE: Final = "group_by_type"
 CONF_CHECK_INTERNET: Final = "check_internet"
+CONF_INCLUDE_OFF_SUBNET: Final = "include_off_subnet"
 
 MODE_AUTO: Final = "auto"
 MODE_MANUAL: Final = "manual"
@@ -38,6 +39,9 @@ DEFAULT_STALE_HOURS: Final = 24
 DEFAULT_IGNORE_RANDOM_MAC: Final = True
 DEFAULT_AUTO_HUBS: Final = True
 DEFAULT_SNMP_ENABLED: Final = True
+DEFAULT_INCLUDE_OFF_SUBNET: Final = False
+# A controller client counts as present when its last_seen is no older than this.
+OFF_SUBNET_PRESENT_S: Final = 300
 SNMP_DEFAULT_COMMUNITY: Final = "public"
 SNMP_PROBE_INTERVAL_S: Final = 3600
 

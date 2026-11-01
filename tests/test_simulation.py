@@ -70,6 +70,14 @@ def _unifi_api(net: Network) -> SimpleNamespace:
                 essid="home" if n.wireless else None, ap_mac=parent.mac if n.wireless else None,
                 sw_mac=None if n.wireless else parent.mac, sw_port=None if n.wireless else n.port_on_parent,
                 raw={"network": "Default", "vlan": 0})
+    now = int(time.time())
+    for r in net.remote:
+        parent = net.nodes[r["parent"]]
+        clients[r["mac"]] = SimpleNamespace(
+            mac=r["mac"], ip=r["ip"], hostname=r["hostname"], name=None, is_wired=not r["wireless"], last_seen=now - r["age_s"],
+            essid="iot" if r["wireless"] else None, ap_mac=parent.mac if r["wireless"] else None,
+            sw_mac=None if r["wireless"] else parent.mac, sw_port=r["port"],
+            raw={"network": r["network"], "vlan": r["vlan"]})
     return SimpleNamespace(clients=clients, devices=devices)
 
 
@@ -414,6 +422,60 @@ async def test_unifi_hubs_respect_auto_hubs_off(hass: HomeAssistant, fake_net) -
     hubs, _ = _snapshot(hass)
     assert list(hubs) == ["hub:gateway"]
     assert {sg["mac"] for sg in ctx["coord"].data.suggested_hubs} >= {net.nodes[k].mac.upper() for k in ("swA", "swB", "ap")}
+
+
+def _remote_by_mac(net: Network, devices: dict) -> dict:
+    return {r["mac"]: next((s.attributes for s in devices.values() if s.attributes["mac"] == r["mac"].upper()), None) for r in net.remote}
+
+
+async def test_off_subnet_clients_are_ignored_by_default(hass: HomeAssistant, fake_net) -> None:
+    net = SHAPES["unifi_vlans"](random.Random(3))
+    await _run(hass, fake_net, net, community_known=True, seed=3)
+    _, devices = _snapshot(hass)
+    assert all(a is None for a in _remote_by_mac(net, devices).values())
+
+
+async def test_off_subnet_clients_from_the_controller(hass: HomeAssistant, fake_net) -> None:
+    """Option on: clients on another VLAN appear by MAC, placed by uplink, present by the controller's last_seen."""
+    net = SHAPES["unifi_vlans"](random.Random(3))
+    pinged: set[str] = set()
+    real_multiping = fake_net.multiping
+
+    async def spy(addresses, **kwargs):
+        pinged.update(addresses)
+        return await real_multiping(addresses, **kwargs)
+
+    fake_net.multiping = spy
+    await _run(hass, fake_net, net, community_known=True, seed=3, extra_opts={"include_off_subnet": True})
+    hubs, devices = _snapshot(hass)
+    remote_ips = {r["ip"] for r in net.remote}
+    assert not remote_ips & set(fake_net.alive), "the sim must not make them pingable"
+    found = _remote_by_mac(net, devices)
+    for r in net.remote:
+        a = found[r["mac"]]
+        assert a is not None, f"{r['hostname']} missing"
+        (want,) = [k for k, s in hubs.items() if s.attributes["mac"] == net.nodes[r["parent"]].mac.upper()]
+        assert a["link"] == want and a["placement"] == "controller"
+        assert a["port"] == r["port"] if not r["wireless"] else a["port"] is None
+        assert (a["network"], a["vlan"]) == ("IoT", 15)
+        assert a["ip"] == r["ip"]
+    states = {s.attributes["mac"]: s.state for s in devices.values()}
+    fresh, old = net.remote[:-2], net.remote[-2:]
+    assert all(states[r["mac"].upper()] == "online" for r in fresh)
+    assert all(states[r["mac"].upper()] != "online" for r in old)
+    # Never pinged: the coordinator must not ask the network about an address it cannot reach.
+    assert not remote_ips & pinged
+
+
+async def test_off_subnet_option_off_again_removes_them(hass: HomeAssistant, fake_net) -> None:
+    net = SHAPES["unifi_vlans"](random.Random(3))
+    ctx = await _run(hass, fake_net, net, community_known=True, seed=3, extra_opts={"include_off_subnet": True})
+    coord = ctx["coord"]
+    coord.opts["include_off_subnet"] = False
+    await coord.async_refresh()
+    await hass.async_block_till_done()
+    _, devices = _snapshot(hass)
+    assert all(a is None for a in _remote_by_mac(net, devices).values())
 
 
 async def test_manual_placement_beats_unifi(hass: HomeAssistant, fake_net) -> None:

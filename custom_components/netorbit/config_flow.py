@@ -21,6 +21,7 @@ from .const import (
     CONF_HUBS,
     CONF_IGNORE_RANDOM_MAC,
     CONF_IGNORED,
+    CONF_INCLUDE_OFF_SUBNET,
     CONF_MODE,
     CONF_PING_INTERVAL,
     CONF_SNMP_COMMUNITY,
@@ -212,6 +213,7 @@ class NetOrbitOptionsFlow(OptionsFlow):
                     CONF_AUTO_HUBS: user_input[CONF_AUTO_HUBS],
                     CONF_GROUP_BY_TYPE: user_input[CONF_GROUP_BY_TYPE],
                     CONF_CHECK_INTERNET: user_input[CONF_CHECK_INTERNET],
+                    CONF_INCLUDE_OFF_SUBNET: user_input[CONF_INCLUDE_OFF_SUBNET],
                     CONF_SNMP_ENABLED: user_input[CONF_SNMP_ENABLED],
                     CONF_SNMP_COMMUNITY: (user_input.get(CONF_SNMP_COMMUNITY) or "").strip(),
                 }
@@ -228,6 +230,7 @@ class NetOrbitOptionsFlow(OptionsFlow):
                 vol.Required(CONF_AUTO_HUBS, default=o[CONF_AUTO_HUBS]): bool,
                 vol.Required(CONF_GROUP_BY_TYPE, default=o[CONF_GROUP_BY_TYPE]): bool,
                 vol.Required(CONF_CHECK_INTERNET, default=o[CONF_CHECK_INTERNET]): bool,
+                vol.Required(CONF_INCLUDE_OFF_SUBNET, default=o[CONF_INCLUDE_OFF_SUBNET]): bool,
                 vol.Required(CONF_SNMP_ENABLED, default=o[CONF_SNMP_ENABLED]): bool,
                 vol.Optional(CONF_SNMP_COMMUNITY, description={"suggested_value": o.get(CONF_SNMP_COMMUNITY) or None}): sel.TextSelector(
                     sel.TextSelectorConfig(type=sel.TextSelectorType.PASSWORD)

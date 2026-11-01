@@ -67,6 +67,9 @@ class Network:
     community: str = "public"
     drop_rate: float = 0.0  # fraction of MAC table entries a switch has aged out
     controller: str | None = None  # "unifi" (trackers report the AP) or "unifi_api" (HA unifi entry with uplinks)
+    # Clients only the controller knows: on another VLAN, so never swept, pinged or seen in ARP.
+    # Each: {mac, ip, hostname, parent (node key), wireless, port, network, vlan, age_s}
+    remote: list[dict] = field(default_factory=list)
 
     # ----- answer key helpers ---------------------------------------------------
 
@@ -232,6 +235,24 @@ def unifi_flex(rng: random.Random, n: int = 18) -> Network:
     return b.net
 
 
+def unifi_vlans(rng: random.Random, n: int = 6, remote: int = 7) -> Network:
+    """unifi_flex, plus clients on another VLAN that only the controller can see (no ARP, no ping)."""
+    net = unifi_flex(rng, n)
+    net.name = "unifi_vlans"
+    b = Builder("scratch", rng)  # only for the MAC generator
+    b._mac_counter = {"4c:00:5e": 5000}
+    parents = ["swA", "swB", "ap"]
+    for i in range(remote):
+        parent = parents[i % 3]
+        wireless = parent == "ap"
+        net.remote.append({
+            "mac": b.mac("generic"), "ip": f"198.51.100.{10 + i}", "hostname": f"iot-{i}",  # example-ok: synthetic test value
+            "parent": parent, "wireless": wireless, "port": None if wireless else 20 + i,
+            "network": "IoT", "vlan": 15, "age_s": 30 if i < remote - 2 else 3 * 3600,
+        })
+    return net
+
+
 def snmp_single(rng: random.Random, aps: int = 2, n: int = 20, community: str = "public") -> Network:
     b = Builder("snmp_single", rng)
     b.net.community = community
@@ -329,6 +350,7 @@ SHAPES = {
     "mesh_no_data": mesh_no_data,
     "unifi": unifi,
     "unifi_flex": unifi_flex,
+    "unifi_vlans": unifi_vlans,
     "snmp_single": snmp_single,
     "snmp_single_custom_community": lambda rng: snmp_single(rng, community="s3cretRO"),
     "snmp_chain": snmp_chain,

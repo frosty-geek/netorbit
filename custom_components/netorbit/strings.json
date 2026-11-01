@@ -57,6 +57,7 @@
           "auto_hubs": "Add hubs automatically when NetOrbit is sure",
           "group_by_type": "Group devices by type when the layout is unknown",
           "check_internet": "Show the internet on the map",
+          "include_off_subnet": "Include UniFi clients on other networks (VLANs)",
           "snmp_enabled": "Read MAC tables from managed switches (SNMP)",
           "snmp_community": "SNMP community (password)"
         },
@@ -67,6 +68,7 @@
           "auto_hubs": "When off, everything NetOrbit finds is listed under Review suggested hubs instead.",
           "group_by_type": "On networks where nothing reports which access point a device uses, the card groups devices into TVs, computers, smart home and so on.",
           "check_internet": "Each ping round also pings two public DNS servers (1.1.1.1 and 8.8.8.8). The Internet node turns red when neither answers for two rounds while your router still does, and fires netorbit_internet_down and netorbit_internet_up events.",
+          "include_off_subnet": "Adds clients that the Home Assistant UniFi integration lists but that sit outside the scanned subnet. They cannot be pinged, so they count as online while the UniFi controller reports them connected. Needs the UniFi integration.",
           "snmp_enabled": "NetOrbit asks each device once an hour whether it is a managed switch, using read-only SNMP, then reads the switch's MAC table to place devices automatically.",
           "snmp_community": "Leave empty to try the factory default. If you changed your switches' read-only community, enter it here."
         }

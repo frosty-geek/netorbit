@@ -964,7 +964,7 @@ class NetOrbitCard extends HTMLElement {
         // A name set in Home Assistant's entity settings wins over NetOrbit's own name.
         key: a.node_key, entity: s.entity_id, label: reg.name || a.label || a.friendly_name, ip: a.ip, mac: a.mac, ip_changes: a.ip_changes || 0,
         kind: a.kind, link: a.link, parent: a.link, sleepy: a.sleepy === true, last_seen: a.last_seen,
-        hub_type: a.hub_type, hostname: a.hostname, vendor: a.vendor, placement: a.placement, port: a.port, icon,
+        hub_type: a.hub_type, hostname: a.hostname, vendor: a.vendor, placement: a.placement, port: a.port, network: a.network, vlan: a.vlan, icon,
         status: NO_STATUS[s.state] ? s.state : "unknown",
       };
       // A device just dropped on a hub is drawn there right away, with a "saving" ring, until
@@ -1878,6 +1878,7 @@ class NetOrbitCard extends HTMLElement {
       (n.vendor ? `<div><span class="k">Maker</span>${noEsc(n.vendor)}</div>` : "") +
       (n.hostname && n.hostname !== n.label ? `<div><span class="k">Host</span>${noEsc(n.hostname)}</div>` : "") +
       (via ? `<div><span class="k">Via</span>${noEsc(via)}${n.port != null ? ` · port ${noEsc(n.port)}` : ""}</div>` : "") +
+      (n.network || n.vlan != null ? `<div><span class="k">Network</span>${noEsc(n.network || "")}${n.network && n.vlan != null ? " · " : ""}${n.vlan != null ? `VLAN ${noEsc(n.vlan)}` : ""}</div>` : "") +
       (n.kind === "device" && n.placement ? `<div><span class="k">Placed</span>${noEsc(NO_PLACEMENT[n.placement] || n.placement)}</div>` : "") +
       `<div><span class="k">Last seen</span>${n.status === "online" ? "now" : noRel(n.last_seen)}</div>` +
       this._dhcpTip(n);
@@ -2100,5 +2101,5 @@ if (!window.customCards.find((c) => c.type === "netorbit-card")) {
     documentationURL: "https://github.com/the-scott-davis/netorbit",
   });
 }
-if (typeof module !== "undefined") module.exports = { netorbitLayout, noGroupFor, noHeight, netorbitZoomView, netorbitScanMode, netorbitScanText, shareModel, netorbitShareSvg, netorbitDraw, netorbitRevealNode, netorbitRevealGlobal, noPartialPath, noShareType };
+if (typeof module !== "undefined") module.exports = { NetOrbitCard, netorbitLayout, noGroupFor, noHeight, netorbitZoomView, netorbitScanMode, netorbitScanText, shareModel, netorbitShareSvg, netorbitDraw, netorbitRevealNode, netorbitRevealGlobal, noPartialPath, noShareType };
 console.info("%c NETORBIT %c " + NETORBIT_VERSION, "color:#0b1220;background:#34d399;font-weight:700", "color:#34d399");

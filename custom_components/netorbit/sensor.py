@@ -117,6 +117,8 @@ class NetOrbitNodeSensor(CoordinatorEntity[NetOrbitCoordinator], SensorEntity):
             "hub_source": node.hub_source,
             "ip_changes": node.ip_changes,
             "port": node.port,
+            "network": node.network,
+            "vlan": node.vlan,
         }
 
     @callback

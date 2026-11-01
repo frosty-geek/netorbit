@@ -31,6 +31,7 @@ from .const import (
     CONF_HUBS,
     CONF_IGNORE_RANDOM_MAC,
     CONF_IGNORED,
+    CONF_INCLUDE_OFF_SUBNET,
     CONF_MODE,
     CONF_PING_INTERVAL,
     CONF_SNMP_COMMUNITY,
@@ -40,6 +41,7 @@ from .const import (
     DEFAULT_AUTO_HUBS,
     DEFAULT_DISCOVERY_INTERVAL,
     DEFAULT_IGNORE_RANDOM_MAC,
+    DEFAULT_INCLUDE_OFF_SUBNET,
     DEFAULT_MODE,
     DEFAULT_PING_INTERVAL,
     DEFAULT_SNMP_ENABLED,
@@ -59,6 +61,7 @@ from .const import (
     INTERNET_DOWN_AFTER,
     INTERNET_KEY,
     INTERNET_TARGETS,
+    OFF_SUBNET_PRESENT_S,
     MODE_AUTO,
     PLACE_CONTROLLER,
     PLACE_MANUAL,
@@ -130,6 +133,8 @@ class Node:
     hub_source: str | None = None  # for hubs: manual | snmp | controller | detected
     ip_changes: int = 0  # how often DHCP has moved it since NetOrbit started tracking
     port: int | None = None  # switch port it is plugged into, when the controller says
+    network: str | None = None  # the controller's network (VLAN) name, when it says
+    vlan: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -159,6 +164,7 @@ def options_with_defaults(entry: ConfigEntry) -> dict[str, Any]:
     opts.setdefault(CONF_SNMP_COMMUNITY, "")
     opts.setdefault(CONF_GROUP_BY_TYPE, True)
     opts.setdefault(CONF_CHECK_INTERNET, True)
+    opts.setdefault(CONF_INCLUDE_OFF_SUBNET, DEFAULT_INCLUDE_OFF_SUBNET)
     opts.setdefault(CONF_HUBS, [])
     opts.setdefault(CONF_DEVICES, {})
     opts.setdefault(CONF_IGNORED, [])
@@ -208,6 +214,7 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         self._unifi = UnifiSnapshot()
         self._unifi_ports: dict[str, int] = {}  # client or device mac -> port on its uplink switch
         self._unifi_router_macs: set[str] = set()
+        self._unifi_nets: dict[str, tuple[str | None, int | None]] = {}  # client mac -> (network, vlan)
         self._suggestions: list[dict[str, Any]] = []
         self._community_asked: set[str] = set()  # IPs already asked with the custom SNMP community
         self._registry: dict[str, Any] = {}
@@ -343,8 +350,9 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
             if ip:
                 rec["ip"] = ip
         self._refresh_controller()
+        controller_online = self._merge_off_subnet(now)
         self._save()
-        self._alive_keys = {k for k, _ in alive}
+        self._alive_keys = {k for k, _ in alive} | controller_online
         data = self._build(now, self._alive_keys)
         self._fire_transitions(data)
         return data
@@ -840,6 +848,7 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         self._unifi = read_unifi(self.hass)
         aps = client_access_points(self.hass)
         ports: dict[str, int] = {}
+        self._unifi_nets = {c.mac: (c.network, c.vlan) for c in self._unifi.clients if c.network or c.vlan is not None}
         for c in self._unifi.clients:
             if c.uplink_mac:
                 aps[c.mac] = c.uplink_mac
@@ -851,6 +860,43 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         self._controller_ap = aps
         self._unifi_ports = ports
         self._unifi_router_macs = {d.mac for d in self._unifi.devices if d.kind == "router"}
+
+    def _merge_off_subnet(self, now: datetime) -> set[str]:
+        """Add controller clients that sit outside the swept subnet; return the keys present now.
+
+        They are keyed by MAC like any discovered device but marked `controller_only`: nothing can
+        ping them from here, so presence comes from the controller's `last_seen` instead. With the
+        option off, anything added earlier is dropped again.
+        """
+        if not self.opts[CONF_INCLUDE_OFF_SUBNET]:
+            for key in [k for k, r in self._seen.items() if r.get("controller_only")]:
+                del self._seen[key]
+            return set()
+        try:
+            subnet = ipaddress.ip_network(self.subnet, strict=False)
+        except ValueError:
+            return set()
+        hub_macs = set(self._hub_macs().values())
+        online: set[str] = set()
+        for c in self._unifi.clients:
+            if c.mac in hub_macs or not c.ip:
+                continue
+            try:
+                if ipaddress.ip_address(c.ip) in subnet:
+                    continue  # the sweep and ping already cover it
+            except ValueError:
+                continue
+            rec = self._seen.setdefault(c.mac, {"first_seen": now.isoformat(), "discovered": True})
+            rec.update({"mac": c.mac, "ip": c.ip, "controller_only": True, "discovered": True})
+            if c.hostname:
+                rec["hostname"] = c.hostname
+            age = now.timestamp() - c.last_seen if c.last_seen else None
+            if age is None or age <= OFF_SUBNET_PRESENT_S:
+                rec["last_seen"] = now.isoformat()
+                online.add(c.mac)
+            elif not rec.get("last_seen"):
+                rec["last_seen"] = datetime.fromtimestamp(c.last_seen, tz=now.tzinfo).isoformat()
+        return online
 
     def _unifi_hub_parent(self, hub: dict[str, Any], rec: dict[str, Any]) -> str | None:
         """The hub a UniFi device hangs off, from its uplink."""
@@ -882,7 +928,7 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
             if hub.get("host"):
                 targets[f"hub:{hub['id']}"] = hub["host"]
         for key, ip in self._tracked_targets().items():
-            if ip:
+            if ip and not (self._seen.get(key) or {}).get("controller_only"):  # off-subnet: the controller says
                 targets[key] = ip
         if self.opts[CONF_CHECK_INTERNET]:
             for ip in INTERNET_TARGETS:
@@ -1023,6 +1069,8 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
                 hostname=rec.get("hostname"), source="manual" if key in devices else "discovered",
                 vendor=rec.get("vendor"), placement=placement, ip_changes=rec.get("ip_changes", 0),
                 port=self._unifi_ports.get(rec.get("mac") or "") if placement == PLACE_CONTROLLER else None,
+                network=self._unifi_nets.get(rec.get("mac") or "", (None, None))[0],
+                vlan=self._unifi_nets.get(rec.get("mac") or "", (None, None))[1],
             )
 
         # A hub with no address (an unmanaged switch, an AP in bridge mode) can't be pinged,
