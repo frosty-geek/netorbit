@@ -23,10 +23,12 @@ import random
 import time
 from collections import Counter
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 
@@ -52,8 +54,33 @@ def _apply(fake_net, net: Network, rng: random.Random) -> None:
     fake_net.tables = net.mac_tables(rng)
 
 
+def _unifi_api(net: Network) -> SimpleNamespace:
+    """What the HA unifi integration's aiounifi controller exposes for this network."""
+    kinds = {"router": "udm", "switch_unmanaged": "usw", "switch_managed": "usw", "ap_unifi": "uap"}
+    devices, clients = {}, {}
+    for n in net.nodes.values():
+        if n.kind in kinds:
+            up = net.nodes[n.parent] if n.parent else None
+            uplink = {"uplink_mac": up.mac, "uplink_remote_port": n.port_on_parent} if up else None
+            devices[n.mac] = SimpleNamespace(mac=n.mac, ip=n.ip, name=n.hostname, model="X", type=kinds[n.kind], uplink=uplink)
+        elif n.kind == "device":
+            parent = net.nodes[n.parent]
+            clients[n.mac] = SimpleNamespace(
+                mac=n.mac, ip=n.ip, hostname=n.hostname or "", name=None, is_wired=not n.wireless, last_seen=None,
+                essid="home" if n.wireless else None, ap_mac=parent.mac if n.wireless else None,
+                sw_mac=None if n.wireless else parent.mac, sw_port=None if n.wireless else n.port_on_parent,
+                raw={"network": "Default", "vlan": 0})
+    return SimpleNamespace(clients=clients, devices=devices)
+
+
 async def _controller(hass: HomeAssistant, net: Network) -> None:
     """A UniFi-like integration: registry entries for APs and trackers reporting each client's AP."""
+    if net.controller == "unifi_api":
+        ctrl = MockConfigEntry(domain="unifi", title="UniFi")
+        ctrl.add_to_hass(hass)
+        ctrl.mock_state(hass, ConfigEntryState.LOADED)
+        ctrl.runtime_data = SimpleNamespace(api=_unifi_api(net))
+        return
     if net.controller != "unifi":
         return
     ctrl = MockConfigEntry(domain="unifi", title="UniFi")
@@ -346,6 +373,51 @@ async def test_manual_always_wins_and_survives_restart(hass: HomeAssistant, fake
         assert after[mac] == hub
     lost = [m for m in before if m not in after]
     assert not lost, f"devices lost on restart: {lost}"
+
+
+@pytest.fixture(autouse=True)
+def fake_unifi_entry(hass: HomeAssistant):
+    """The fake `unifi` entry is marked loaded without the integration (and aiounifi) being
+    installed, so mark it unloaded again before Home Assistant tries to unload it."""
+    yield
+    for entry in hass.config_entries.async_entries("unifi"):
+        entry.mock_state(hass, ConfigEntryState.NOT_LOADED)
+
+
+async def test_unifi_api_builds_hub_tree_and_places_clients(hass: HomeAssistant, fake_net) -> None:
+    """Flex switches without SNMP: the controller's uplinks give the hub tree and every placement."""
+    net = SHAPES["unifi_flex"](random.Random(3))
+    await _run(hass, fake_net, net, community_known=True, seed=3)
+    hubs, devices = _snapshot(hass)
+
+    def hub_key(true_key: str) -> str:
+        t = net.nodes[true_key]
+        (found,) = [k for k, s in hubs.items() if s.attributes["mac"] == t.mac.upper()]
+        return found
+
+    assert hubs[hub_key("swA")].attributes["link"] == "hub:gateway"
+    assert hubs[hub_key("swB")].attributes["link"] == hub_key("swA")
+    assert hubs[hub_key("ap")].attributes["link"] == hub_key("swB")
+    by_mac = {s.attributes["mac"]: s.attributes for s in devices.values()}
+    for t in net.devices():
+        a = by_mac[t.mac.upper()]
+        want = "hub:gateway" if t.parent == "router" else hub_key(t.parent)
+        assert a["link"] == want, f"{t.hostname or t.mac}: under {a['link']}, really under {want}"
+        assert a["placement"] == "controller"
+        assert a["port"] == (None if t.wireless else t.port_on_parent)
+
+
+async def test_manual_placement_beats_unifi(hass: HomeAssistant, fake_net) -> None:
+    net = SHAPES["unifi_flex"](random.Random(3))
+    ctx = await _run(hass, fake_net, net, community_known=True, seed=3)
+    hubs, devices = _snapshot(hass)
+    wired = next(t for t in net.devices() if not t.wireless and t.parent == "swB")
+    other = next(k for k, s in hubs.items() if s.attributes["mac"] == net.nodes["swA"].mac.upper())
+    await hass.services.async_call(DOMAIN, "assign_device", {"device": wired.mac.upper(), "hub": other.removeprefix("hub:")}, blocking=True)
+    await ctx["coord"].async_refresh()
+    _, devices = _snapshot(hass)
+    a = next(s.attributes for s in devices.values() if s.attributes["mac"] == wired.mac.upper())
+    assert a["link"] == other and a["placement"] == "manual"
 
 
 async def test_wrong_community_degrades_gracefully(hass: HomeAssistant, fake_net) -> None:

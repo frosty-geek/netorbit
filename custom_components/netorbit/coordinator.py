@@ -88,6 +88,7 @@ from .snmp import SnmpClient
 from .mdns import mdns_label, mdns_name
 from .sources import client_access_points, ping_names_by_ip, registry_by_mac, ssdp_types_by_ip, tracker_names_by_mac
 from .topology import Topology, infer, macs_close
+from .unifi_source import UnifiSnapshot, read_unifi
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -128,6 +129,7 @@ class Node:
     placement: str = PLACE_NONE  # manual | controller | snmp | none
     hub_source: str | None = None  # for hubs: manual | snmp | controller | detected
     ip_changes: int = 0  # how often DHCP has moved it since NetOrbit started tracking
+    port: int | None = None  # switch port it is plugged into, when the controller says
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -203,6 +205,9 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         self._tables: dict[str, dict[str, int]] = {}
         self._topology = Topology()
         self._controller_ap: dict[str, str] = {}
+        self._unifi = UnifiSnapshot()
+        self._unifi_ports: dict[str, int] = {}  # client or device mac -> port on its uplink switch
+        self._unifi_router_macs: set[str] = set()
         self._suggestions: list[dict[str, Any]] = []
         self._community_asked: set[str] = set()  # IPs already asked with the custom SNMP community
         self._registry: dict[str, Any] = {}
@@ -337,7 +342,7 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
             rec["last_seen"] = now.isoformat()
             if ip:
                 rec["ip"] = ip
-        self._controller_ap = client_access_points(self.hass)
+        self._refresh_controller()
         self._save()
         self._alive_keys = {k for k, _ in alive}
         data = self._build(now, self._alive_keys)
@@ -717,6 +722,8 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         for hub_id, hmac in hubs.items():
             if hmac == mac:
                 return hub_id
+        if mac in self._unifi_router_macs:
+            return ROOT_HUB_ID  # the gateway's own MAC is often not in ARP (it is not on this VLAN)
         near = [hub_id for hub_id, hmac in hubs.items() if macs_close(hmac, mac)]
         return near[0] if len(near) == 1 else None
 
@@ -734,10 +741,20 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
                 continue
             candidates[rec["mac"]] = rec
         # APs that a controller integration reports clients against are hubs by definition.
-        controller_aps = set(client_access_points(self.hass).values())
+        self._refresh_controller()
+        controller_aps = set(self._controller_ap.values())
+        unifi_kinds = {d.mac: d for d in self._unifi.devices if d.kind != "router"}
+
+        # UniFi switches and APs are hubs by definition, even on a VLAN this host can't see.
+        for mac, dev in unifi_kinds.items():
+            if mac in dismissed or mac in ignored or self._is_hub_address(mac, dev.ip):
+                continue
+            rec = candidates.get(mac) or {}
+            hub_type = HUB_SWITCH if dev.kind == "switch" else HUB_AP
+            adds.append({"name": dev.name or self._hub_name(mac, rec, hub_type), "type": hub_type, "host": dev.ip or rec.get("ip"), "mac": mac, "source": "controller"})
 
         for mac, rec in candidates.items():
-            if mac in dismissed or mac in ignored or self._is_hub_address(mac, rec.get("ip")):
+            if mac in unifi_kinds or mac in dismissed or mac in ignored or self._is_hub_address(mac, rec.get("ip")):
                 continue
             reg = self._registry.get(mac)
             snmp = rec.get("snmp") or {}
@@ -808,6 +825,33 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         stamp = now.isoformat()
         for key, hub_id in self._topology.device_hub.items():
             self._seen[key]["auto"] = {"hub": hub_id, "source": PLACE_SNMP, "at": stamp}
+
+    def _refresh_controller(self) -> None:
+        """Re-read what the controller integrations say about who is plugged in where.
+
+        UniFi (from HA's own `unifi` entry) wins over device trackers: it also knows wired clients.
+        """
+        self._unifi = read_unifi(self.hass)
+        aps = client_access_points(self.hass)
+        ports: dict[str, int] = {}
+        for c in self._unifi.clients:
+            if c.uplink_mac:
+                aps[c.mac] = c.uplink_mac
+                if c.port is not None:
+                    ports[c.mac] = c.port
+        for d in self._unifi.devices:
+            if d.uplink_port is not None:
+                ports[d.mac] = d.uplink_port
+        self._controller_ap = aps
+        self._unifi_ports = ports
+        self._unifi_router_macs = {d.mac for d in self._unifi.devices if d.kind == "router"}
+
+    def _unifi_hub_parent(self, hub: dict[str, Any], rec: dict[str, Any]) -> str | None:
+        """The hub a UniFi device hangs off, from its uplink."""
+        mac = hub.get("mac") or rec.get("mac")
+        dev = next((d for d in self._unifi.devices if d.mac == mac), None) if mac else None
+        parent = self._hub_for_mac(dev.uplink_mac) if dev else None
+        return parent if parent != hub["id"] else None
 
     def _auto_placement(self, key: str, rec: dict[str, Any], now: datetime) -> tuple[str | None, str]:
         mac = rec.get("mac")
@@ -921,12 +965,15 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         for hub in self.opts[CONF_HUBS]:
             key = f"hub:{hub['id']}"
             rec = self._seen.get(key, {})
+            unifi_parent = self._unifi_hub_parent(hub, rec)
             if hub["id"] == ROOT_HUB_ID:
                 parent = None
             elif hub.get("parent_locked") and hub.get("parent") in hub_ids:
                 parent = hub["parent"]
             elif self._topology.hub_parent.get(hub["id"]) in hub_ids:
                 parent = self._topology.hub_parent[hub["id"]]
+            elif unifi_parent in hub_ids:
+                parent = unifi_parent
             elif hub.get("parent") in hub_ids:
                 parent = hub["parent"]
             else:
@@ -942,6 +989,7 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
                 source="hub", hub_type=hub.get("type", HUB_OTHER), hub_source=hub.get("source", "manual"),
                 ip_changes=rec.get("ip_changes", 0),
                 vendor=(self._seen.get(hub.get("mac") or "") or {}).get("vendor"),
+                port=self._unifi_ports.get(hub.get("mac") or rec.get("mac") or "") if parent == unifi_parent else None,
             )
         if self._tables:
             sources.add(PLACE_SNMP)
@@ -968,6 +1016,7 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
                 last_seen=rec.get("last_seen"), first_seen=rec.get("first_seen"),
                 hostname=rec.get("hostname"), source="manual" if key in devices else "discovered",
                 vendor=rec.get("vendor"), placement=placement, ip_changes=rec.get("ip_changes", 0),
+                port=self._unifi_ports.get(rec.get("mac") or "") if placement == PLACE_CONTROLLER else None,
             )
 
         # A hub with no address (an unmanaged switch, an AP in bridge mode) can't be pinged,

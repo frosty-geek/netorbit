@@ -3,7 +3,8 @@
   "name": "NetOrbit",
   "after_dependencies": [
     "frontend",
-    "ssdp"
+    "ssdp",
+    "unifi"
   ],
   "categories": [
     "computers_network.routers_network",

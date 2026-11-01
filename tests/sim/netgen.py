@@ -66,7 +66,7 @@ class Network:
     nodes: dict[str, Node] = field(default_factory=dict)
     community: str = "public"
     drop_rate: float = 0.0  # fraction of MAC table entries a switch has aged out
-    controller: str | None = None  # "unifi" when clients report their AP
+    controller: str | None = None  # "unifi" (trackers report the AP) or "unifi_api" (HA unifi entry with uplinks)
 
     # ----- answer key helpers ---------------------------------------------------
 
@@ -205,6 +205,33 @@ def unifi(rng: random.Random, aps: int = 3, n: int = 25) -> Network:
     return b.net
 
 
+def unifi_flex(rng: random.Random, n: int = 18) -> Network:
+    """USW Flex switches that have no SNMP, one behind the other, an AP behind the second.
+
+    Only the controller (the HA unifi integration) knows who sits where: wired clients report
+    their switch and port, Wi-Fi clients their AP, and every UniFi device its uplink.
+    """
+    b = Builder("unifi_flex", rng)
+    b.net.controller = "unifi_api"
+    b.net.nodes["router"].vendor = "ubiquiti"
+    b.net.nodes["router"].mac = b.mac("ubiquiti")
+    b.add("swA", "switch_unmanaged", "router", ip=b.ip(), vendor="ubiquiti", hostname="usw-flex-a")
+    b.add("swB", "switch_unmanaged", "swA", ip=b.ip(), vendor="ubiquiti", hostname="usw-flex-b")
+    b.add("ap", "ap_unifi", "swB", ip=b.ip(), vendor="ubiquiti", hostname="u7-lite")
+    ports: dict[str, int] = {}
+    for key, node in b.net.nodes.items():
+        if node.parent:
+            ports[node.parent] = ports.get(node.parent, 0) + 1
+            node.port_on_parent = ports[node.parent] + 1
+    for i in range(n):
+        parent = ["router", "swA", "swB", "ap", "ap"][i % 5]
+        d = b.device(parent, wireless=parent == "ap")
+        if parent != "ap":
+            ports[parent] = ports.get(parent, 0) + 1
+            d.port_on_parent = ports[parent] + 1
+    return b.net
+
+
 def snmp_single(rng: random.Random, aps: int = 2, n: int = 20, community: str = "public") -> Network:
     b = Builder("snmp_single", rng)
     b.net.community = community
@@ -301,6 +328,7 @@ SHAPES = {
     "flat": lambda rng: flat(rng, 15),
     "mesh_no_data": mesh_no_data,
     "unifi": unifi,
+    "unifi_flex": unifi_flex,
     "snmp_single": snmp_single,
     "snmp_single_custom_community": lambda rng: snmp_single(rng, community="s3cretRO"),
     "snmp_chain": snmp_chain,

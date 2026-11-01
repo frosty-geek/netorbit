@@ -964,7 +964,7 @@ class NetOrbitCard extends HTMLElement {
         // A name set in Home Assistant's entity settings wins over NetOrbit's own name.
         key: a.node_key, entity: s.entity_id, label: reg.name || a.label || a.friendly_name, ip: a.ip, mac: a.mac, ip_changes: a.ip_changes || 0,
         kind: a.kind, link: a.link, parent: a.link, sleepy: a.sleepy === true, last_seen: a.last_seen,
-        hub_type: a.hub_type, hostname: a.hostname, vendor: a.vendor, placement: a.placement, icon,
+        hub_type: a.hub_type, hostname: a.hostname, vendor: a.vendor, placement: a.placement, port: a.port, icon,
         status: NO_STATUS[s.state] ? s.state : "unknown",
       };
       // A device just dropped on a hub is drawn there right away, with a "saving" ring, until
@@ -1877,7 +1877,7 @@ class NetOrbitCard extends HTMLElement {
       (n.mac ? `<div><span class="k">MAC</span>${noEsc(n.mac)}</div>` : "") +
       (n.vendor ? `<div><span class="k">Maker</span>${noEsc(n.vendor)}</div>` : "") +
       (n.hostname && n.hostname !== n.label ? `<div><span class="k">Host</span>${noEsc(n.hostname)}</div>` : "") +
-      (via ? `<div><span class="k">Via</span>${noEsc(via)}</div>` : "") +
+      (via ? `<div><span class="k">Via</span>${noEsc(via)}${n.port != null ? ` · port ${noEsc(n.port)}` : ""}</div>` : "") +
       (n.kind === "device" && n.placement ? `<div><span class="k">Placed</span>${noEsc(NO_PLACEMENT[n.placement] || n.placement)}</div>` : "") +
       `<div><span class="k">Last seen</span>${n.status === "online" ? "now" : noRel(n.last_seen)}</div>` +
       this._dhcpTip(n);
