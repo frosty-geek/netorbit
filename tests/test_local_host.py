@@ -119,3 +119,15 @@ async def test_host_added_by_ip_is_rekeyed(hass: HomeAssistant, fake_net) -> Non
     shown = _devices(hass)
     assert list(shown) == [HOST_MAC.upper()]
     assert shown[HOST_MAC.upper()]["label"] == "Server"
+
+
+async def test_ha_host_with_a_virtual_nic_is_not_taken_for_a_random_mac(hass: HomeAssistant, fake_net) -> None:
+    # HAOS in a VM has a locally administered NIC address (52:54:00 on KVM). That is not a phone's
+    # privacy MAC: the host must stay on the map even with "ignore random MACs" on.
+    vm_mac = "52:54:00:00:53:50"  # example-ok: synthetic test value
+    fake_net.alive = {GATEWAY, HOST_IP}
+    fake_net.arp = {GATEWAY: "00:00:5e:00:53:01"}
+    await _setup(hass, _entry(), [_adapter("eth0", HOST_IP)], {"eth0": vm_mac})
+    host = _devices(hass).get(vm_mac.upper())
+    assert host is not None, "the Home Assistant host was dropped as a random MAC"
+    assert host["ip"] == HOST_IP and host["state"] == "online"

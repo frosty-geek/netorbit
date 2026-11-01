@@ -412,7 +412,8 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
             changed = self._follow_dhcp(opts, mac_ip, arp, now)
 
             for mac, ip in sorted(mac_ip.items(), key=lambda kv: _ip_sort(kv[1])):
-                if self.opts[CONF_IGNORE_RANDOM_MAC] and is_random_mac(mac):
+                # The host itself is never a privacy MAC: a VM's NIC (52:54:00 on KVM) is locally administered too.
+                if self.opts[CONF_IGNORE_RANDOM_MAC] and is_random_mac(mac) and ip not in local:
                     continue
                 key = mac
                 rec = self._seen.get(key)
@@ -866,6 +867,11 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         self._controller_ap = aps
         self._unifi_ports = ports
         self._unifi_router_macs = {d.mac for d in self._unifi.devices if d.kind == "router"}
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            lost = [f"..{c.mac[-5:]} wired={c.wired} up=..{(c.uplink_mac or '??')[-5:]} name={c.uplink_name}"
+                    for c in self._unifi.clients if c.ip and self._hub_for_mac(aps.get(c.mac)) is None]
+            _LOGGER.debug("NetOrbit UniFi: %d clients, %d with an uplink, %d without a matching hub: %s",
+                          len(self._unifi.clients), sum(1 for c in self._unifi.clients if c.mac in aps), len(lost), lost[:30])
 
     def _merge_off_subnet(self, now: datetime) -> set[str]:
         """Add controller clients that sit outside the swept subnet; return the keys present now.
@@ -987,7 +993,7 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         if self.opts[CONF_MODE] == MODE_AUTO:
             for key, rec in self._seen.items():
                 if rec.get("discovered") and key not in ignored:
-                    if self.opts[CONF_IGNORE_RANDOM_MAC] and is_random_mac(rec.get("mac")):
+                    if self.opts[CONF_IGNORE_RANDOM_MAC] and is_random_mac(rec.get("mac")) and not rec.get("local"):
                         continue
                     out[key] = rec.get("ip")
         for key, cfg in devices.items():
@@ -1114,7 +1120,7 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
             for key, rec in self._seen.items():
                 if not rec.get("discovered") or key in nodes or key in ignored:
                     continue
-                if self.opts[CONF_IGNORE_RANDOM_MAC] and is_random_mac(rec.get("mac")):
+                if self.opts[CONF_IGNORE_RANDOM_MAC] and is_random_mac(rec.get("mac")) and not rec.get("local"):
                     continue
                 if self._is_hub_address(rec.get("mac"), rec.get("ip")):
                     continue
