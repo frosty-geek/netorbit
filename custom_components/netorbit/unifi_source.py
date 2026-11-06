@@ -8,7 +8,7 @@ the tracker-based placement keeps working.
 
 Only the attributes below are read (aiounifi 96, Home Assistant 2026.10):
 
-* client: ``mac ip hostname name is_wired last_seen essid ap_mac sw_mac sw_port raw``
+* client: ``mac ip hostname name is_wired last_seen essid access_point_mac switch_mac switch_port raw``
 * device: ``mac ip name model type uplink`` (``uplink`` is a dict with ``uplink_mac`` and
   ``uplink_remote_port``)
 """
@@ -50,8 +50,7 @@ class UnifiClient:
     vlan: int | None = None
     ssid: str | None = None
     last_seen: int | None = None
-    uplink_name: str | None = None  # name of the device it hangs off (`last_uplink_name`); USW Flex needs it
-    uplink_port: int | None = None  # `last_uplink_remote_port`, for when `sw_port` is missing
+    uplink_name: str | None = None  # name of the device it hangs off (`last_uplink_name`)
 
 
 @dataclass
@@ -100,8 +99,8 @@ def _parse_client(c: Any) -> UnifiClient | None:
     wired = bool(getattr(c, "is_wired", False))
     raw = getattr(c, "raw", None)
     raw = raw if isinstance(raw, dict) else {}
-    uplink = normalize_mac(getattr(c, "sw_mac", None) if wired else getattr(c, "ap_mac", None))
-    port = _int(getattr(c, "sw_port", None)) if wired else None
+    uplink = normalize_mac(getattr(c, "switch_mac", None) if wired else getattr(c, "access_point_mac", None))
+    port = _int(getattr(c, "switch_port", None)) if wired else None
     if wired and port is None:
         port = _int(raw.get("last_uplink_remote_port"))
     return UnifiClient(
@@ -116,7 +115,6 @@ def _parse_client(c: Any) -> UnifiClient | None:
         ssid=None if wired else _str(getattr(c, "essid", None)),
         last_seen=_int(getattr(c, "last_seen", None)),
         uplink_name=_str(raw.get("last_uplink_name")),
-        uplink_port=_int(raw.get("last_uplink_remote_port")),
     )
 
 

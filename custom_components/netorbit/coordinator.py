@@ -850,15 +850,21 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         aps = client_access_points(self.hass)
         ports: dict[str, int] = {}
         self._unifi_nets = {c.mac: (c.network, c.vlan) for c in self._unifi.clients if c.network or c.vlan is not None}
-        # USW Flex reports a client's `sw_mac` as something that is not the switch's own MAC (and
-        # sometimes none), so a MAC that is no hub falls back to the uplink's name.
+        self._unifi_router_macs = {d.mac for d in self._unifi.devices if d.kind == "router"}  # _hub_for_mac needs it below
+        # A client's `sw_mac` is not always the switch's own MAC (and sometimes missing), so a MAC
+        # that is no hub falls back to the uplink's name.
         by_name = {d.name.casefold(): d.mac for d in self._unifi.devices if d.name}
+        by_mac = named = 0
         for c in self._unifi.clients:
             uplink = c.uplink_mac
+            from_name = None
             if (not uplink or not self._hub_for_mac(uplink)) and c.uplink_name:
-                uplink = by_name.get(c.uplink_name.casefold()) or uplink
+                from_name = by_name.get(c.uplink_name.casefold())
+            uplink = from_name or uplink
             if uplink:
                 aps[c.mac] = uplink
+                named += bool(from_name)
+                by_mac += not from_name
                 if c.port is not None:
                     ports[c.mac] = c.port
         for d in self._unifi.devices:
@@ -866,12 +872,11 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
                 ports[d.mac] = d.uplink_port
         self._controller_ap = aps
         self._unifi_ports = ports
-        self._unifi_router_macs = {d.mac for d in self._unifi.devices if d.kind == "router"}
         if _LOGGER.isEnabledFor(logging.DEBUG):
             lost = [f"..{c.mac[-5:]} wired={c.wired} up=..{(c.uplink_mac or '??')[-5:]} name={c.uplink_name}"
                     for c in self._unifi.clients if c.ip and self._hub_for_mac(aps.get(c.mac)) is None]
-            _LOGGER.debug("NetOrbit UniFi: %d clients, %d with an uplink, %d without a matching hub: %s",
-                          len(self._unifi.clients), sum(1 for c in self._unifi.clients if c.mac in aps), len(lost), lost[:30])
+            _LOGGER.debug("NetOrbit UniFi: %d clients; uplinks: %d by MAC, %d by name, %d by tracker; %d without a matching hub: %s",
+                          len(self._unifi.clients), by_mac, named, len(aps) - by_mac - named, len(lost), lost[:30])
 
     def _merge_off_subnet(self, now: datetime) -> set[str]:
         """Add controller clients that sit outside the swept subnet; return the keys present now.

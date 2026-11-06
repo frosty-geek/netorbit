@@ -2,3 +2,5 @@ pytest-homeassistant-custom-component
 icmplib>=3.0.3
 pysnmp>=7.1
 aiooui>=0.1.9
+# Same pin as the unifi manifest in the Home Assistant release we run: tests build real aiounifi objects.
+aiounifi==96

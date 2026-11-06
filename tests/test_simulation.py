@@ -24,8 +24,11 @@ import time
 from collections import Counter
 from datetime import timedelta
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
+from aiounifi.models.client import Client
+from aiounifi.models.device import Device
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
 from homeassistant.config_entries import ConfigEntryState
@@ -55,29 +58,35 @@ def _apply(fake_net, net: Network, rng: random.Random) -> None:
 
 
 def _unifi_api(net: Network) -> SimpleNamespace:
-    """What the HA unifi integration's aiounifi controller exposes for this network."""
+    """What the HA unifi integration's aiounifi controller exposes: real models, built from controller JSON."""
     kinds = {"router": "udm", "switch_unmanaged": "usw", "switch_managed": "usw", "ap_unifi": "uap"}
     devices, clients = {}, {}
+
+    def client(**raw: Any) -> Client:
+        return Client({k: v for k, v in raw.items() if v is not None})
+
     for n in net.nodes.values():
         if n.kind in kinds:
             up = net.nodes[n.parent] if n.parent else None
-            uplink = {"uplink_mac": up.mac, "uplink_remote_port": n.port_on_parent} if up else None
-            devices[n.mac] = SimpleNamespace(mac=n.mac, ip=n.ip, name=n.hostname, model="X", type=kinds[n.kind], uplink=uplink)
+            raw = {"mac": n.mac, "ip": n.ip, "name": n.hostname, "model": "X", "type": kinds[n.kind]}
+            if up:
+                raw["uplink"] = {"uplink_mac": up.mac, "uplink_remote_port": n.port_on_parent}
+            devices[n.mac] = Device(raw)
         elif n.kind == "device":
             parent = net.nodes[n.parent]
-            clients[n.mac] = SimpleNamespace(
-                mac=n.mac, ip=n.ip, hostname=n.hostname or "", name=None, is_wired=not n.wireless, last_seen=None,
+            clients[n.mac] = client(
+                mac=n.mac, ip=n.ip, hostname=n.hostname or "", is_wired=not n.wireless,
                 essid="home" if n.wireless else None, ap_mac=parent.mac if n.wireless else None,
                 sw_mac=None if n.wireless else parent.mac, sw_port=None if n.wireless else n.port_on_parent,
-                raw={"network": "Default", "vlan": 0})
+                network="Default", vlan=0)
     now = int(time.time())
     for r in net.remote:
         parent = net.nodes[r["parent"]]
-        clients[r["mac"]] = SimpleNamespace(
-            mac=r["mac"], ip=r["ip"], hostname=r["hostname"], name=None, is_wired=not r["wireless"], last_seen=now - r["age_s"],
+        clients[r["mac"]] = client(
+            mac=r["mac"], ip=r["ip"], hostname=r["hostname"], is_wired=not r["wireless"], last_seen=now - r["age_s"],
             essid="iot" if r["wireless"] else None, ap_mac=parent.mac if r["wireless"] else None,
             sw_mac=None if r["wireless"] else parent.mac, sw_port=r["port"],
-            raw={"network": r["network"], "vlan": r["vlan"]})
+            network=r["network"], vlan=r["vlan"])
     return SimpleNamespace(clients=clients, devices=devices)
 
 
@@ -483,7 +492,7 @@ async def test_client_moving_back_into_the_subnet_is_pinged_again(hass: HomeAssi
     mover = net.remote[0]
     api = hass.config_entries.async_entries("unifi")[0].runtime_data.api
     new_ip = "192.0.2.250"
-    api.clients[mover["mac"]].ip = new_ip
+    api.clients[mover["mac"]].raw["ip"] = new_ip
     fake_net.alive.add(new_ip)
     fake_net.arp[new_ip] = mover["mac"]
     pinged.clear()
@@ -613,9 +622,9 @@ async def test_flex_switch_clients_are_placed_by_uplink_name(hass: HomeAssistant
         c = api.clients[r["mac"]]
         parent = net.nodes[r["parent"]]
         assert parent.hostname, "the sim switch needs a name for this test"
-        c.sw_mac = "02:00:00:00:00:99" if i % 2 == 0 else None  # example-ok: synthetic test value
-        c.sw_port = r["port"] if i % 2 == 0 else None
-        c.raw = {**c.raw, "last_uplink_name": parent.hostname, "last_uplink_remote_port": r["port"]}
+        c.raw["sw_mac"] = "02:00:00:00:00:99" if i % 2 == 0 else None  # example-ok: synthetic test value
+        c.raw["sw_port"] = r["port"] if i % 2 == 0 else None
+        c.raw.update(last_uplink_name=parent.hostname, last_uplink_remote_port=r["port"])
     coord._force_sweep = True
     await coord.async_refresh()
     await hass.async_block_till_done()
@@ -626,3 +635,65 @@ async def test_flex_switch_clients_are_placed_by_uplink_name(hass: HomeAssistant
         (want,) = [k for k, s in hubs.items() if s.attributes["mac"] == net.nodes[r["parent"]].mac.upper()]
         assert a["link"] == want and a["placement"] == "controller", r["hostname"]
         assert a["port"] == r["port"], r["hostname"]
+
+
+def _gateway_radio_client(net: Network, api: SimpleNamespace, *, stale_name: str | None = None) -> tuple[dict, str]:
+    """A Wi-Fi client on the gateway's own radio. The controller's device MAC for a gateway sits a few
+    above the LAN MAC that ARP shows (4 on a Dream Router), and its radio clients report the device MAC."""
+    root = next(n for n in net.nodes.values() if n.kind == "router")
+    device_mac = root.mac[:-2] + f"{(int(root.mac[-2:], 16) + 4) % 256:02x}"
+    api.devices[root.mac].raw["mac"] = device_mac
+    client = next(r for r in net.remote if r["wireless"])
+    raw = api.clients[client["mac"]].raw
+    raw["ap_mac"] = device_mac
+    if stale_name:
+        raw["last_uplink_name"] = stale_name
+    return client, device_mac
+
+
+async def test_client_on_the_gateway_radio_is_placed_on_the_gateway(hass: HomeAssistant, fake_net) -> None:
+    net = SHAPES["unifi_vlans"](random.Random(3))
+    ctx = await _run(hass, fake_net, net, community_known=True, seed=3, extra_opts={"include_off_subnet": True})
+    api = hass.config_entries.async_entries("unifi")[0].runtime_data.api
+    client, _ = _gateway_radio_client(net, api)
+    ctx["coord"]._force_sweep = True
+    await ctx["coord"].async_refresh()
+    await hass.async_block_till_done()
+    hubs, devices = _snapshot(hass)
+    a = _remote_by_mac(net, devices)[client["mac"]]
+    assert a["placement"] == "controller"
+    root = next(n for n in net.nodes.values() if n.kind == "router")
+    assert hubs[a["link"]].attributes["mac"] == root.mac.upper()
+
+
+async def test_gateway_mac_beats_a_stale_uplink_name_on_the_first_read(hass: HomeAssistant, fake_net) -> None:
+    """Right after a restart ARP has no MAC for the root hub, so only the controller's device list says
+    this MAC is the gateway. It must be known before clients are read, or the stale name wins."""
+    net = SHAPES["unifi_vlans"](random.Random(3))
+    ctx = await _run(hass, fake_net, net, community_known=True, seed=3, extra_opts={"include_off_subnet": True})
+    coord = ctx["coord"]
+    api = hass.config_entries.async_entries("unifi")[0].runtime_data.api
+    switch = next(n for n in net.nodes.values() if n.kind.startswith("switch"))
+    client, device_mac = _gateway_radio_client(net, api, stale_name=switch.hostname)
+    coord._unifi_router_macs = set()
+    coord._hub_macs = lambda: {}  # the first read after a restart: no hub MAC is known yet
+    coord._refresh_controller()
+    assert coord._controller_ap[client["mac"]] == device_mac
+
+
+async def test_debug_line_counts_each_uplink_source(hass: HomeAssistant, fake_net, caplog) -> None:
+    """One total hid the bug where no client ever had an uplink by MAC: count each path on its own."""
+    net = SHAPES["unifi_vlans"](random.Random(3))
+    ctx = await _run(hass, fake_net, net, community_known=True, seed=3, extra_opts={"include_off_subnet": True})
+    coord = ctx["coord"]
+    api = hass.config_entries.async_entries("unifi")[0].runtime_data.api
+    wired = next(r for r in net.remote if not r["wireless"])
+    c = api.clients[wired["mac"]]
+    c.raw["sw_mac"] = "02:00:00:00:00:99"  # example-ok: synthetic test value
+    c.raw["last_uplink_name"] = net.nodes[wired["parent"]].hostname
+    hass.states.async_set("device_tracker.only_a_tracker", "home",
+                          {"mac": "00:00:5e:00:53:ee", "ap_mac": net.nodes[wired["parent"]].mac})  # example-ok: synthetic test value
+    with_uplink = sum(1 for x in api.clients.values() if x.switch_mac or x.access_point_mac)
+    caplog.set_level("DEBUG", logger="custom_components.netorbit.coordinator")
+    coord._refresh_controller()
+    assert f"{with_uplink - 1} by MAC, 1 by name, 1 by tracker" in caplog.text

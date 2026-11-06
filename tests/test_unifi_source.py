@@ -1,7 +1,13 @@
-"""Reading topology from Home Assistant's own UniFi integration (aiounifi-shaped objects)."""
+"""Reading topology from Home Assistant's own UniFi integration.
+
+Clients and devices are the real aiounifi models built from controller JSON, so a property name
+that aiounifi does not have fails here. Hand-made fakes hid exactly that once.
+"""
 
 from types import SimpleNamespace
 
+from aiounifi.models.client import Client
+from aiounifi.models.device import Device
 from homeassistant.config_entries import ConfigEntryState
 
 from custom_components.netorbit.unifi_source import (
@@ -22,18 +28,14 @@ class _Handler(dict):
     """aiounifi handlers are mappings keyed by MAC; only .values() is used."""
 
 
-def _client(mac, **kw):
-    raw = kw.pop("raw", {})
-    base = dict(mac=mac, ip=None, hostname="", name=None, is_wired=False, last_seen=None,
-                essid=None, ap_mac=None, sw_mac=None, sw_port=None, raw=raw)
-    base.update(kw)
-    return SimpleNamespace(**base)
+def _client(mac, **raw):
+    """A real aiounifi Client from the keys the controller sends."""
+    return Client({"mac": mac, **raw})
 
 
-def _device(mac, type_, **kw):
-    base = dict(mac=mac, ip="192.0.2.1", name="dev", model="X", type=type_, uplink=None)
-    base.update(kw)
-    return SimpleNamespace(**base)
+def _device(mac, type_, **raw):
+    """A real aiounifi Device. `uplink` is only sent for devices that have one."""
+    return Device({"mac": mac, "ip": "192.0.2.1", "name": "dev", "model": "X", "type": type_, **raw})
 
 
 def _api(clients=(), devices=()):
@@ -54,7 +56,7 @@ def _hass(api=None, state=ConfigEntryState.LOADED, has_runtime=True):
 
 def test_wired_client_uses_switch_and_port():
     api = _api(clients=[_client(PC, ip="192.0.2.50", hostname="pc", is_wired=True, sw_mac=SW.upper(), sw_port=7,
-                                raw={"network": "Default", "vlan": 0})])
+                                network="Default", vlan=0)])
     snap = parse_controller(api)
     (c,) = snap.clients
     assert c.mac == PC
@@ -76,13 +78,13 @@ def test_wireless_client_uses_ap_and_ssid():
 
 
 def test_vlan_and_network_come_from_raw_and_vlan_is_int():
-    api = _api(clients=[_client(IOT, ap_mac=AP, raw={"network": "IoT", "vlan": "15"})])
+    api = _api(clients=[_client(IOT, ap_mac=AP, network="IoT", vlan="15")])
     (c,) = parse_controller(api).clients
     assert (c.network, c.vlan) == ("IoT", 15)
 
 
 def test_missing_vlan_is_none():
-    api = _api(clients=[_client(IOT, ap_mac=AP, raw={})])
+    api = _api(clients=[_client(IOT, ap_mac=AP)])
     (c,) = parse_controller(api).clients
     assert (c.network, c.vlan) == (None, None)
 
@@ -107,7 +109,6 @@ def test_invalid_mac_is_skipped():
 def test_one_broken_client_does_not_hide_the_rest():
     class Boom:
         mac = PHONE
-        raw = {}
 
         @property
         def is_wired(self):
@@ -147,9 +148,8 @@ def test_unknown_device_type_is_skipped():
     assert [d.mac for d in parse_controller(api).devices] == [AP]
 
 
-def test_device_without_uplink_attribute_does_not_crash():
-    dev = SimpleNamespace(mac=AP, ip=None, name="ap", model="X", type="uap")
-    api = SimpleNamespace(clients=_Handler(), devices=_Handler({AP: dev}))
+def test_device_without_uplink_key_does_not_crash():
+    api = _api(devices=[_device(AP, "uap")])
     (d,) = parse_controller(api).devices
     assert d.uplink_mac is None
 
@@ -184,18 +184,18 @@ def test_read_unifi_survives_missing_api_handlers():
 
 def test_device_whose_uplink_property_raises_keeps_its_place():
     """aiounifi's Device.uplink is `raw["uplink"]`: a gateway has no such key, so it raises KeyError."""
-    class Gateway:
-        mac = GW
-        ip = "192.0.2.1"
-        name = "router"
-        model = "X"
-        type = "udm"
-        raw = {}
-
-        @property
-        def uplink(self):
-            return self.raw["uplink"]
-
-    api = SimpleNamespace(clients=_Handler(), devices=_Handler({GW: Gateway()}))
-    (d,) = parse_controller(api).devices
+    dev = _device(GW, "udm", name="router")
+    try:
+        dev.uplink
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("aiounifi changed: Device.uplink no longer raises, drop this guard")
+    (d,) = parse_controller(_api(devices=[dev])).devices
     assert (d.mac, d.kind, d.uplink_mac) == (GW, "router", None)
+
+
+def test_real_empty_defaults_read_as_missing():
+    """aiounifi answers "" and 0 for absent keys; the source must see those as nothing."""
+    (c,) = parse_controller(_api(clients=[_client(PC)])).clients
+    assert (c.ip, c.hostname, c.uplink_mac, c.port, c.ssid, c.last_seen) == (None, None, None, None, None, 0)
