@@ -32,5 +32,5 @@
     "pysnmp>=7.1",
     "aiooui>=0.1.9"
   ],
-  "version": "0.2.8"
+  "version": "0.2.8-frosty.1"
 }
