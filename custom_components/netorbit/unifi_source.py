@@ -6,7 +6,7 @@ needs no extra credentials and no second login. `runtime_data.api` is not a publ
 every access here is defensive: if anything is missing or renamed, the result is empty and
 the tracker-based placement keeps working.
 
-Only the attributes below are read (aiounifi 96, Home Assistant 2026.10):
+Only the attributes below are read (aiounifi 98, Home Assistant 2026.11):
 
 * client: ``mac ip hostname name is_wired last_seen essid access_point_mac switch_mac switch_port raw``
 * device: ``mac ip name model type uplink`` (``uplink`` is a dict with ``uplink_mac`` and
